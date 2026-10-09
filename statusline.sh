@@ -240,95 +240,6 @@ if [[ "$parent_cmd" == *"--dangerously-skip-permissions"* ]]; then
     skip_perms="⚡"
 fi
 
-
-# ── Responsive layout ───────────────────────────────────
-# Override for testing, e.g. CLAUDE_STATUSLINE_COLUMNS=90
-terminal_columns="${CLAUDE_STATUSLINE_COLUMNS:-}"
-if [ -z "$terminal_columns" ]; then
-    terminal_columns=$(tput cols 2>/dev/null)
-fi
-if ! [[ "$terminal_columns" =~ ^[0-9]+$ ]] || [ "$terminal_columns" -le 0 ]; then
-    terminal_columns=120
-fi
-
-if [ "$terminal_columns" -ge 160 ]; then
-    layout_mode="full"
-elif [ "$terminal_columns" -ge 100 ]; then
-    layout_mode="compact"
-else
-    layout_mode="tiny"
-fi
-
-# ── Remote Control detection ────────────────────────────
-# Detection order:
-#   1. Explicit positive JSON fields, if Claude exposes one
-#   2. Positive environment-variable override
-#   3. Manual active marker file
-#   4. Claude process arguments
-#   5. Otherwise show Coming soon (the live per-session state is not exposed)
-#
-# Manual active override examples:
-#   export CLAUDE_REMOTE_CONTROL_ACTIVE=true
-#   touch ~/.claude/remote-control.active
-remote_control_state=""
-
-remote_control_json=$(echo "$input" | jq -r '
-    [
-      .remote_control.active,
-      .remote_control.enabled,
-      .remote_control.is_active,
-      .remoteControl.active,
-      .remoteControl.enabled,
-      .remoteControl.isActive,
-      .session.remote_control.active,
-      .session.remote_control.enabled,
-      .session.remoteControl.active,
-      .session.remoteControl.enabled
-    ]
-    | map(select(. != null))
-    | first // empty
-' 2>/dev/null)
-
-case "${remote_control_json,,}" in
-    true|1|yes|on|active|enabled) remote_control_state="active" ;;
-esac
-
-if [ -z "$remote_control_state" ]; then
-    remote_control_env="${CLAUDE_REMOTE_CONTROL_ACTIVE:-${CLAUDE_CODE_REMOTE_CONTROL_ACTIVE:-${CLAUDE_REMOTE_CONTROL:-}}}"
-    case "${remote_control_env,,}" in
-        true|1|yes|on|active|enabled) remote_control_state="active" ;;
-    esac
-fi
-
-if [ -z "$remote_control_state" ]; then
-    if [ -f "${HOME}/.claude/remote-control.active" ] || [ -f "${XDG_STATE_HOME:-$HOME/.local/state}/claude/remote-control.active" ]; then
-        remote_control_state="active"
-    fi
-fi
-
-if [ -z "$remote_control_state" ]; then
-    check_pid="$$"
-    for _ in 1 2 3 4 5 6; do
-        check_pid=$(ps -o ppid= -p "$check_pid" 2>/dev/null | tr -d ' ')
-        [ -z "$check_pid" ] || [ "$check_pid" = "0" ] && break
-        check_cmd=$(ps -o args= -p "$check_pid" 2>/dev/null)
-        if [[ "$check_cmd" == *"remote-control"* ]] || [[ "$check_cmd" == *"remote_control"* ]]; then
-            remote_control_state="active"
-            break
-        fi
-    done
-fi
-
-if [ "$remote_control_state" = "active" ]; then
-    remote_control_icon="🟢"
-    remote_control_text="Active"
-    remote_control_color="$green"
-else
-    remote_control_icon="🚧"
-    remote_control_text="Coming soon"
-    remote_control_color="$yellow"
-fi
-
 # ── Codex usage via codexbar ───────────────────────────
 codex_usage_cache="$cache_dir/statusline-codex-usage-cache.json"
 
@@ -607,79 +518,34 @@ if [ -n "$usage_data" ] && echo "$usage_data" | jq -e . >/dev/null 2>&1; then
     fi
 fi
 
-
-# ── Responsive LINE 1 override ──────────────────────────
-# The full layout keeps all details. Compact and tiny modes rebuild
-# the usage line from the already parsed values to prevent clipping.
-if [ "$layout_mode" = "compact" ] && [ -n "$usage_data" ]; then
-    if [ "$usage_provider" = "codex" ]; then
-        line1="${white}Now:${reset} ${primary_icon} ${primary_pct_color}${primary_pct}%${reset}${sep}${white}Week:${reset} ${secondary_icon} ${secondary_pct_color}${secondary_pct}%${reset}"
-        [ -n "$primary_remaining" ] && line1+="${sep}${white}Reset:${reset} ${primary_remaining}"
-        if [ -n "$reset_credits" ] && [ "$reset_credits" != "null" ]; then
-            line1+="${sep}${white}Credits:${reset} ${green}${reset_credits}${reset}"
-        fi
-    else
-        line1="${white}Now:${reset} ${five_hour_icon} ${five_hour_pct_color}${five_hour_pct}%${reset}${sep}${white}Week:${reset} ${seven_day_icon} ${seven_day_pct_color}${seven_day_pct}%${reset}"
-        [ -n "$five_hour_remaining" ] && line1+="${sep}${white}Reset:${reset} ${five_hour_remaining}"
-        if [ "${extra_enabled:-false}" = "true" ]; then
-            line1+="${sep}${white}Extra:${reset} ${extra_icon} ${extra_pct_color}\$${extra_used}/${extra_limit}${reset}"
-        fi
-    fi
-elif [ "$layout_mode" = "tiny" ] && [ -n "$usage_data" ]; then
-    if [ "$usage_provider" = "codex" ]; then
-        line1="${white}Usage:${reset} ${primary_icon}${primary_pct_color}${primary_pct}%${reset}${sep}${white}Week:${reset} ${secondary_icon}${secondary_pct_color}${secondary_pct}%${reset}"
-    else
-        line1="${white}Usage:${reset} ${five_hour_icon}${five_hour_pct_color}${five_hour_pct}%${reset}${sep}${white}Week:${reset} ${seven_day_icon}${seven_day_pct_color}${seven_day_pct}%${reset}"
-    fi
-fi
-
-# ── LINE 2: Model │ Context │ Directory │ Effort │ Remote │ Session ──
+# ── LINE 2: Model │ Context │ Directory │ Effort │ Session ──
 line2=""
 
+line2+="${white}Model in use:${reset} ${blue}${model_name}${reset}"
+line2+="${sep}"
+
+line2+="${white}Context:${reset} ${pct_color}✍️ ${pct_used}%${reset}"
+line2+="${sep}"
+
+line2+="${cyan}${dirname}${reset}"
+if [ -n "$git_branch" ]; then
+    line2+=" ${green}(${git_branch}${red}${git_dirty}${green})${reset}"
+fi
+line2+="${sep}"
+
 case "$effort" in
-    high)   effort_value="${red}🔥${reset} ${magenta}high${reset}" ;;
-    medium) effort_value="${yellow}⚡ medium${reset}" ;;
-    low)    effort_value="${green}🐢 low${reset}" ;;
-    xhigh)  effort_value="${red}💥 xhigh${reset}" ;;
-    max)    effort_value="${red}🌋 max${reset}" ;;
-    *)      effort_value="${white}⚪ default${reset}" ;;
+    high)   line2+="${white}Effort:${reset} ${red}🔥${reset} ${magenta}high${reset}" ;;
+    medium) line2+="${white}Effort:${reset} ${yellow}⚡${reset} ${yellow}medium${reset}" ;;
+    low)    line2+="${white}Effort:${reset} ${green}🐢${reset} ${green}low${reset}" ;;
+    xhigh)  line2+="${white}Effort:${reset} ${red}💥${reset} ${red}xhigh${reset}" ;;
+    max)    line2+="${white}Effort:${reset} ${red}🌋${reset} ${red}max${reset}" ;;
+    *)      line2+="${white}Effort:${reset} ${white}⚪${reset} ${white}default${reset}" ;;
 esac
 
-remote_value="${remote_control_icon} ${remote_control_color}${remote_control_text}${reset}"
-
-dir_value="${cyan}${dirname}${reset}"
-if [ -n "$git_branch" ]; then
-    dir_value+=" ${green}(${git_branch}${red}${git_dirty}${green})${reset}"
+if [ -n "$session_duration" ]; then
+    line2+="${sep}"
+    line2+="${white}⏱${reset} ${white}${session_duration}${reset}"
 fi
-
-if [ "$layout_mode" = "full" ]; then
-    line2+="${white}Model in use:${reset} ${blue}${model_name}${reset}"
-    line2+="${sep}${white}Context:${reset} ${pct_color}✍️ ${pct_used}%${reset}"
-    line2+="${sep}${dir_value}"
-    line2+="${sep}${white}Effort:${reset} ${effort_value}"
-    line2+="${sep}${white}Remote Control:${reset} ${remote_value}"
-    if [ -n "$session_duration" ]; then
-        line2+="${sep}${white}⏱${reset} ${white}${session_duration}${reset}"
-    fi
-elif [ "$layout_mode" = "compact" ]; then
-    line2+="${blue}${model_name}${reset}"
-    line2+="${sep}${white}Ctx:${reset} ${pct_color}${pct_used}%${reset}"
-    line2+="${sep}${dir_value}"
-    line2+="${sep}${white}Effort:${reset} ${effort_value}"
-    line2+="${sep}${white}Remote:${reset} ${remote_value}"
-    if [ -n "$session_duration" ]; then
-        line2+="${sep}${white}⏱ ${session_duration}${reset}"
-    fi
-else
-    # Tiny layout keeps the requested Effort -> Remote ordering and
-    # drops lower-priority labels before the terminal has to truncate.
-    line2+="${cyan}${dirname}${reset}"
-    line2+="${sep}${pct_color}${pct_used}%${reset}"
-    line2+="${sep}${effort_value}"
-    line2+="${sep}${remote_control_icon} ${remote_control_color}${remote_control_text}${reset}"
-fi
-
-[ -n "$skip_perms" ] && line2+=" ${red}${skip_perms}${reset}"
 
 # ── Output ──────────────────────────────────────────────
 [ -n "$line1" ] && printf "%b" "$line1"
